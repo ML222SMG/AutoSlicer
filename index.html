@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sprite Slicer Pro - Interactive</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: #1a1a1a; 
+            color: #eee; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            padding: 0; 
+            margin: 0; 
+            overflow: hidden; 
+            height: 100vh;
+        }
+        .controls { 
+            background: #333; 
+            padding: 10px; 
+            display: flex; 
+            gap: 8px; 
+            align-items: center; 
+            flex-wrap: wrap; 
+            justify-content: center; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            z-index: 10;
+            width: 100%;
+        }
+        
+        #modeIndicator {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .mode-edit { background: #e74c3c; color: white; }
+        .mode-view { background: #2ecc71; color: white; }
+
+        #container { 
+            position: relative; 
+            flex-grow: 1;
+            width: 100vw; 
+            overflow: auto; 
+            border: 1px solid #444; 
+            background: #000;
+            -webkit-overflow-scrolling: touch;
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-start;
+        }
+
+        canvas { 
+            display: block; 
+            background-image: linear-gradient(45deg, #222 25%, transparent 25%), linear-gradient(-45deg, #222 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #222 75%), linear-gradient(-45deg, transparent 75%, #222 75%); 
+            background-size: 20px 20px; 
+            image-rendering: pixelated; 
+            transform-origin: 0 0;
+        }
+
+        button { cursor: pointer; padding: 8px 12px; border: none; border-radius: 4px; background: #0088ff; color: white; font-weight: bold; font-size: 12px; transition: 0.2s; }
+        button:active { transform: scale(0.95); }
+        .btn-mode { background: #9b59b6; border: 2px solid #fff; }
+        .btn-danger { background: #dc3545; }
+        .btn-success { background: #28a745; }
+        .btn-smart { background: #e67e22; }
+        
+        .hint { font-size: 11px; color: #aaa; padding: 8px; text-align: center; background: #222; width: 100%; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <div id="modeIndicator" class="mode-view">MODO: DESPLAZAR</div>
+        <div style="width: 100%; display: flex; justify-content: center; gap: 5px; flex-wrap: wrap;">
+            <input type="file" id="upload" style="max-width: 150px;">
+            <button id="btnToggleMode" class="btn-mode">🔄 Cambiar Modo</button>
+            <button id="btnProcess">Auto Slice</button>
+            <button id="btnSmartDelete" class="btn-smart">🧹 Elim. Intel.</button>
+            <button id="btnDeleteSelected" class="btn-danger" disabled>🗑️ Borrar</button>
+            <button id="btnExport" class="btn-success">💾 ZIP</button>
+            <button id="btnClear" class="btn-danger">🔥 Limpiar</button>
+        </div>
+    </div>
+
+    <div id="container">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="hint" id="hintText">
+        ✨ <b>Modo Desplazar</b>: Usa dos dedos para zoom | <b>Modo Editar</b>: Toca para crear rectángulos.
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <script>
+        const i18n = {
+            es: { 
+                modeView: "MODO: DESPLAZAR", modeEdit: "MODO: EDITAR",
+                auto: "Auto Slice", smart: "🧹 Elim. Intel.", delete: "🗑️ Borrar", 
+                export: "💾 ZIP", clear: "🔥 Limpiar",
+                hint: "✨ <b>Mover</b>: Arrastra y zoom (2 dedos) | <b>Editar</b>: Crea/Ajusta cuadros."
+            },
+            en: { 
+                modeView: "MODE: VIEW / PAN", modeEdit: "MODE: EDIT",
+                auto: "Auto Slice", smart: "🧹 Smart Del.", delete: "🗑️ Delete", 
+                export: "💾 ZIP", clear: "🔥 Clear",
+                hint: "✨ <b>View</b>: Drag and zoom (2 fingers) | <b>Edit</b>: Create/Adjust boxes."
+            }
+        };
+
+        const lang = navigator.language.startsWith('es') ? 'es' : 'en';
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('container');
+        const modeInd = document.getElementById('modeIndicator');
+        const hintEl = document.getElementById('hintText');
+        
+        let originalImage = null;
+        let rects = [];
+        let selectedRect = null;
+        let interactionMode = null; 
+        let editMode = false; // false = View/Pan, true = Edit
+        let offset = { x: 0, y: 0 };
+        let zoom = 1;
+        let startDist = 0; // Para pinch zoom
+
+        // Inicializar textos
+        function updateUI() {
+            modeInd.innerText = editMode ? i18n[lang].modeEdit : i18n[lang].modeView;
+            modeInd.className = editMode ? 'mode-edit' : 'mode-view';
+            hintEl.innerHTML = i18n[lang].hint;
+            document.getElementById('btnProcess').innerText = i18n[lang].auto;
+            document.getElementById('btnSmartDelete').innerText = i18n[lang].smart;
+            document.getElementById('btnDeleteSelected').innerText = i18n[lang].delete;
+            document.getElementById('btnExport').innerText = i18n[lang].export;
+            document.getElementById('btnClear').innerText = i18n[lang].clear;
+        }
+        updateUI();
+
+        document.getElementById('btnToggleMode').onclick = () => {
+            editMode = !editMode;
+            canvas.style.touchAction = editMode ? 'none' : 'auto';
+            selectedRect = null;
+            updateUI();
+            draw();
+        };
+
+        upload.onchange = (e) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                originalImage = new Image();
+                originalImage.onload = () => {
+                    canvas.width = originalImage.width;
+                    canvas.height = originalImage.height;
+                    rects = [];
+                    zoom = 1;
+                    draw();
+                };
+                originalImage.src = event.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        };
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+            const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+            return {
+                x: (clientX - rect.left) / zoom,
+                y: (clientY - rect.top) / zoom
+            };
+        }
+
+        function handleStart(e) {
+            if (!originalImage || !editMode) return;
+            const pos = getPos(e);
+            const handleSize = 25 / zoom;
+            let found = null;
+            let resize = false;
+
+            for (let r of rects) {
+                const x2 = Math.max(r.x1, r.x2), y2 = Math.max(r.y1, r.y2);
+                if (Math.abs(pos.x - x2) < handleSize && Math.abs(pos.y - y2) < handleSize) {
+                    found = r; resize = true; break;
+                }
+            }
+
+            if (!found) {
+                for (let r of rects) {
+                    const xmin = Math.min(r.x1, r.x2), xmax = Math.max(r.x1, r.x2);
+                    const ymin = Math.min(r.y1, r.y2), ymax = Math.max(r.y1, r.y2);
+                    if (pos.x > xmin && pos.x < xmax && pos.y > ymin && pos.y < ymax) {
+                        found = r; break;
+                    }
+                }
+            }
+
+            if (found) {
+                selectedRect = found;
+                document.getElementById('btnDeleteSelected').disabled = false;
+                interactionMode = resize ? 'resize-br' : 'move';
+                offset.x = pos.x - found.x1;
+                offset.y = pos.y - found.y1;
+            } else {
+                selectedRect = { x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y };
+                rects.push(selectedRect);
+                interactionMode = 'resize-br';
+            }
+            draw();
+        }
+
+        function handleMove(e) {
+            if (e.touches && e.touches.length === 2 && !editMode) {
+                // Pinch to zoom
+                const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+                if (startDist > 0) {
+                    zoom *= (dist / startDist);
+                    zoom = Math.min(Math.max(0.2, zoom), 10);
+                    draw();
+                }
+                startDist = dist;
+                return;
+            }
+
+            if (!editMode || !selectedRect || !interactionMode) return;
+            if (e.cancelable) e.preventDefault();
+            
+            const pos = getPos(e);
+            if (interactionMode === 'resize-br') {
+                selectedRect.x2 = pos.x;
+                selectedRect.y2 = pos.y;
+            } else if (interactionMode === 'move') {
+                const w = selectedRect.x2 - selectedRect.x1;
+                const h = selectedRect.y2 - selectedRect.y1;
+                selectedRect.x1 = pos.x - offset.x;
+                selectedRect.y1 = pos.y - offset.y;
+                selectedRect.x2 = selectedRect.x1 + w;
+                selectedRect.y2 = selectedRect.y1 + h;
+            }
+            draw();
+        }
+
+        function handleEnd() {
+            startDist = 0;
+            interactionMode = null;
+        }
+
+        canvas.addEventListener('mousedown', handleStart);
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+        canvas.addEventListener('touchstart', (e) => { 
+            if(e.touches.length === 2) startDist = 0; 
+            handleStart(e); 
+        }, { passive: false });
+        canvas.addEventListener('touchmove', handleMove, { passive: false });
+        canvas.addEventListener('touchend', handleEnd);
+
+        function draw() {
+            canvas.style.width = (canvas.width * zoom) + 'px';
+            canvas.style.height = (canvas.height * zoom) + 'px';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!originalImage) return;
+            ctx.drawImage(originalImage, 0, 0);
+            rects.forEach(r => {
+                const isSelected = (r === selectedRect);
+                ctx.strokeStyle = isSelected ? '#00bbff' : '#00ff00';
+                ctx.lineWidth = 2 / zoom; 
+                const x = Math.min(r.x1, r.x2), y = Math.min(r.y1, r.y2);
+                const w = Math.abs(r.x2 - r.x1), h = Math.abs(r.y2 - r.y1);
+                ctx.strokeRect(x, y, w, h);
+                if (isSelected && editMode) {
+                    ctx.fillStyle = 'rgba(0, 187, 255, 0.2)';
+                    ctx.fillRect(x, y, w, h);
+                    const handleS = 15 / zoom;
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(Math.max(r.x1, r.x2) - handleS/2, Math.max(r.y1, r.y2) - handleS/2, handleS, handleS);
+                }
+            });
+        }
+
+        // Acciones de botones (AutoSlice, Clear, etc. se mantienen igual)
+        document.getElementById('btnProcess').onclick = () => {
+            if (!originalImage) return;
+            const tCanvas = document.createElement('canvas');
+            tCanvas.width = canvas.width; tCanvas.height = canvas.height;
+            const tCtx = tCanvas.getContext('2d');
+            tCtx.drawImage(originalImage, 0, 0);
+            const imgData = tCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+            rects = performAutoSlice(imgData, canvas.width, canvas.height);
+            draw();
+        };
+
+        function performAutoSlice(imgData, w, h) {
+            const visited = new Uint8Array(w * h);
+            const found = [];
+            for (let y = 0; y < h; y += 2) {
+                for (let x = 0; x < w; x += 2) {
+                    const i = (y * w + x) * 4;
+                    if (imgData[i + 3] > 20 && !visited[y * w + x]) {
+                        let rx1 = x, ry1 = y, rx2 = x, ry2 = y;
+                        const q = [[x, y]];
+                        visited[y * w + x] = 1;
+                        while(q.length > 0) {
+                            const [cx, cy] = q.shift();
+                            rx1 = Math.min(rx1, cx); ry1 = Math.min(ry1, cy);
+                            rx2 = Math.max(rx2, cx); ry2 = Math.max(ry2, cy);
+                            for(let ny=cy-3; ny<=cy+3; ny+=2) {
+                                for(let nx=cx-3; nx<=cx+3; nx+=2) {
+                                    if(nx>=0 && nx<w && ny>=0 && ny<h && !visited[ny*w+nx] && imgData[(ny*w+nx)*4+3] > 20) {
+                                        visited[ny*w+nx] = 1; q.push([nx, ny]);
+                                    }
+                                }
+                            }
+                        }
+                        found.push({x1: rx1, y1: ry1, x2: rx2, y2: ry2});
+                    }
+                }
+            }
+            return found;
+        }
+
+        document.getElementById('btnDeleteSelected').onclick = () => {
+            rects = rects.filter(r => r !== selectedRect);
+            selectedRect = null;
+            draw();
+        };
+
+        document.getElementById('btnClear').onclick = () => { rects = []; draw(); };
+
+        document.getElementById('btnExport').onclick = async () => {
+            if (rects.length === 0) return;
+            const zip = new JSZip();
+            rects.forEach((r, i) => {
+                const x = Math.floor(Math.min(r.x1, r.x2)), y = Math.floor(Math.min(r.y1, r.y2));
+                const w = Math.floor(Math.abs(r.x2 - r.x1)), h = Math.floor(Math.abs(r.y2 - r.y1));
+                if (w < 1 || h < 1) return;
+                const tile = document.createElement('canvas');
+                tile.width = w; tile.height = h;
+                tile.getContext('2d').drawImage(originalImage, x, y, w, h, 0, 0, w, h);
+                zip.file(`sprite_${i}.png`, tile.toDataURL().split(',')[1], {base64: true});
+            });
+            const content = await zip.generateAsync({type:"blob"});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(content);
+            a.download = "sprites.zip";
+            a.click();
+        };
+    </script>
+</body>
+</html>
